@@ -1,0 +1,105 @@
+name: API Testing CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: toolshop
+          MYSQL_USER: user
+          MYSQL_PASSWORD: password
+        ports:
+          - 3306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          extensions: pdo_mysql
+
+      - name: Install Composer
+        run: |
+          php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
+          php composer-setup.php --install-dir=/usr/local/bin --filename=composer
+          php -r "unlink('composer-setup.php');"
+
+      - name: Install Newman
+        run: npm install -g newman
+
+      - name: Install Laravel dependencies
+        run: composer install
+        working-directory: ./sprint5-with-bugs
+
+      - name: Copy .env file
+        run: cp ./sprint5-with-bugs/.env.example ./sprint5-with-bugs/.env
+
+      - name: Update .env for MySQL
+        run: |
+          sed -i 's/DB_HOST=127.0.0.1/DB_HOST=mysql/' ./sprint5-with-bugs/.env
+          sed -i 's/DB_DATABASE=laravel/DB_DATABASE=toolshop/' ./sprint5-with-bugs/.env
+          sed -i 's/DB_USERNAME=root/DB_USERNAME=user/' ./sprint5-with-bugs/.env
+          sed -i 's/DB_PASSWORD=/DB_PASSWORD=password/' ./sprint5-with-bugs/.env
+
+      - name: Start Docker Compose
+        run: docker-compose up -d
+
+      - name: Run migrations and seed
+        run: |
+          docker-compose exec -T laravel-api php artisan migrate
+          docker-compose exec -T laravel-api php artisan db:seed
+
+      - name: Wait for application
+        run: sleep 10
+
+      - name: Run Brands API Tests
+        run: |
+          newman run tests/BrandsAPITests.json \
+          --iteration-data tests/data/dataBrands.csv \
+          --reporters cli,junit \
+          --reporter-junit-export test-results-brands.xml
+
+      - name: Run Messages API Tests
+        run: |
+          newman run tests/MessageAPITests.json \
+          --iteration-data tests/data/dataMessages.csv \
+          --reporters cli,junit \
+          --reporter-junit-export test-results-messages.xml
+
+      - name: Run Products API Tests
+        run: |
+          newman run tests/ProductsAPITests.json \
+          --iteration-data tests/data/dataProducts.csv \
+          --reporters cli,junit \
+          --reporter-junit-export test-results-products.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-results
+          path: |
+            test-results-brands.xml
+            test-results-messages.xml
+            test-results-products.xml
